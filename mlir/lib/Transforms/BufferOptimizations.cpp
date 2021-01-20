@@ -380,20 +380,15 @@ public:
 
       // Iterate over the aliasSet and compute the use range.
       for (Value aliasValue : aliasSet) {
-        Value::user_range users = aliasValue.getUsers();
         // Check if the allocValue/alias is already processed or has no users.
-        if (useRangeMap.count(aliasValue) || users.empty())
+        if (useRangeMap.count(aliasValue) || aliasValue.use_empty())
           continue;
 
         FirstAndLastUse firstAndLastUse{};
         // Iterate over all uses of the allocValue/alias and find their first
         // and last use.
-        for (Operation *user : users) {
-          // No update is needed if the operation has already been considered.
-          if (firstAndLastUse.firstUse == user ||
-              firstAndLastUse.lastUse == user)
-            continue;
-
+        for (Operation *user : SmallPtrSet<Operation *, 4>(
+                 aliasValue.user_begin(), aliasValue.user_end())) {
           updateFirstOp(firstAndLastUse.firstUse, user, [&]() {
             return &findCommonDominator(aliasValue, ValueSetT{aliasValue},
                                         dominators)
@@ -430,7 +425,7 @@ public:
         // Do not compare an item to itself and make sure that the value of item
         // B is not a BlockArgument. BlockArguments cannot be reused. Also
         // perform a type check.
-        if (useRangeItemA == useRangeItemB || BlockArgument::classof(itemB) ||
+        if (useRangeItemA == useRangeItemB || itemB.isa<BlockArgument>() ||
             !checkTypeCompatibility(itemA, itemB))
           continue;
 
@@ -442,13 +437,12 @@ public:
           continue;
 
         // Get the defining operation of itemA.
-        Operation *defOp = BlockArgument::classof(itemA)
-                               ? &itemA.getParentBlock()->front()
-                               : itemA.getDefiningOp();
+        Block *defOpBlock = itemA.isa<BlockArgument>()
+                                ? itemA.getParentBlock()
+                                : itemA.getDefiningOp()->getBlock();
 
         // The defining OP of itemA has to dominate the first use of itemB.
-        if (!dominators.dominates(defOp->getBlock(),
-                                  usesB.firstUse->getBlock()))
+        if (!dominators.dominates(defOpBlock, usesB.firstUse->getBlock()))
           continue;
 
         // Insert itemB into the right place of the potReuseVector. The order of
@@ -503,11 +497,7 @@ public:
             continue;
 
           // Update the actualReuseMap.
-          if (actualReuseMap.count(item))
-            actualReuseMap[item].insert(v);
-          else
-            actualReuseMap.insert(
-                std::pair<Value, DenseSet<Value>>(item, DenseSet<Value>{v}));
+          actualReuseMap[item].insert(v);
 
           // Join the aliases of the reusee and reuser.
           llvm::set_union(aliasCache[item], aliasCache[v]);
@@ -610,8 +600,9 @@ private:
     if (isUsedBefore(usesA.lastUse, usesB.firstUse)) {
       // If this is the case we need to check if itemB is used after the
       // introduction of an alias of itemA. Should this be the case we must not
-      // replace it with itemA as there might be an alias interference.
-      if (usedInAliasBlock(itemA, usesB.firstUse))
+      // replace it with itemA as there might be an alias interference. The
+      // actual check happens when the respective alias is itemA.
+      if (isUsedAfterAliasIntroduction(itemA, usesB.firstUse))
         return false;
     }
     // Check if the first use of itemB is not before the last use of itemA.
@@ -641,9 +632,9 @@ private:
     return isUsedBefore(otherLastUse, &postDom->front());
   }
 
-  /// Check if the given operation is inside the Block of an alias of the given
-  /// value.
-  bool usedInAliasBlock(Value v, Operation *otherFirstUse) {
+  /// Check if the given operation is used after the introduction of one of the
+  /// aliases of the given value.
+  bool isUsedAfterAliasIntroduction(Value v, Operation *otherFirstUse) {
     return llvm::any_of(aliasCache[v], [&](Value alias) {
       Operation *firstOpInBlock = &alias.getParentBlock()->front();
       return isUsedBefore(firstOpInBlock, otherFirstUse) ||
@@ -686,13 +677,14 @@ private:
     // common postdominator is used as a termination condition.
     Block *postDom =
         postDominators.findNearestCommonDominator(opBlock, otherBlock);
-    return isSuccessor(opBlock, otherBlock, postDom, SmallPtrSet<Block *, 6>{});
+    SmallPtrSet<Block *, 6> visited;
+    return isSuccessor(opBlock, otherBlock, postDom, visited);
   }
 
-  /// Recursive function that returns true if the target Block is a successor of
+  /// Recursive function that returns true if the target Block is reachable from
   /// the currentBlock.
   bool isSuccessor(Block *currentBlock, Block *target, Block *postDom,
-                   SmallPtrSet<Block *, 6> visited) {
+                   SmallPtrSet<Block *, 6> &visited) {
     if (currentBlock == target)
       return true;
     if (currentBlock == postDom)
