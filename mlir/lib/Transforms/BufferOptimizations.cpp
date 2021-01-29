@@ -385,19 +385,15 @@ public:
         FirstAndLastUse firstAndLastUse{};
         // Iterate over all uses of the allocValue/alias and find their first
         // and last use.
-        for (Operation *user : SmallPtrSet<Operation *, 4>(
-                 aliasValue.user_begin(), aliasValue.user_end())) {
-          updateFirstOp(firstAndLastUse.firstUse, user, [&]() {
-            return &findCommonDominator(aliasValue, ValueSetT{aliasValue},
-                                        dominators)
-                        ->back();
-          });
+        for (Operation *user : aliasValue.getUsers()) {
+          // No update is needed if the operation has already been considered.
+          if (firstAndLastUse.firstUse == user ||
+              firstAndLastUse.lastUse == user)
+            continue;
 
-          updateLastOp(firstAndLastUse.lastUse, user, [&]() {
-            return &findCommonDominator(aliasValue, ValueSetT{aliasValue},
-                                        postDominators)
-                        ->front();
-          });
+          updateFirstOp(aliasValue, firstAndLastUse.firstUse, user);
+
+          updateLastOp(aliasValue, firstAndLastUse.lastUse, user);
         }
         useRangeMap.insert(
             std::pair<Value, FirstAndLastUse>(aliasValue, firstAndLastUse));
@@ -511,15 +507,19 @@ public:
           Operation *itemLastUse = useRangeMap[item].lastUse;
           Operation *vLastUse = useRangeMap[v].lastUse;
           // If itemLastUse and vLast are in different branches set the last use
-          // to the next Postdominator. Otherwise, update the last use to the
-          // last used operation of the replaced value.
+          // to the next Postdominator. If they are in neighboring nested
+          // regions set the last use to the common parent op. Otherwise, update
+          // the last use to the last used operation of the replaced value.
           if (!isUsedBefore(itemLastUse, vLastUse) &&
-              !isUsedBefore(vLastUse, itemLastUse))
+              !isUsedBefore(vLastUse, itemLastUse)) {
+            // As we are updating the last OP here we have to erase the value
+            // from this set as the new lastOP might not be inside a nested
+            // region anymore.
+            lastUseInsideNestedRegion.erase(item);
             useRangeMap[item].lastUse =
-                &findCommonDominator(item, ValueSetT{v}, postDominators)
-                     ->front();
-          else
-            useRangeMap[item].lastUse = useRangeMap[v].lastUse;
+                findOpInDominator(postDominators, item, itemLastUse, vLastUse);
+          } else
+            useRangeMap[item].lastUse = vLastUse;
 
           currentReuserSet.insert(item);
           replacedSet.insert(v);
@@ -605,30 +605,31 @@ private:
         return false;
     }
     // Check if the first use of itemB is not before the last use of itemA.
-    // This is the case if the two uses are either in neighbour branches or if
+    // This is the case if the two uses are either in neighbor branches or if
     // they are the same OP.
     else if (!isUsedBefore(usesB.firstUse, usesA.lastUse)) {
       // If they are the same OP we can still replace itemB with itemA if the OP
       // is not a ``real use''. This is the case if we had to choose a postDom
       // OP as the last use for itemA.
       if (usesA.lastUse == usesB.firstUse) {
-        if (isRealUse(itemA, usesA.lastUse))
+        if (lastUseInsideNestedRegion.contains(itemA) ||
+            isRealUse(itemA, usesA.lastUse))
           return false;
+        return true;
       }
-      // This checks a special case which would change the sementics of the
-      // program.
-      else if (!isUsedBeforePostDom(itemA, itemB, usesB.lastUse))
+      // If one of the two uses spawns a nested region and other item is inside
+      // of it we must not replace itemB with itemA. If one of the two uses
+      // equals the ancestor OP of the respective other use we know that this is
+      // the case.
+      Operation *ancOpB =
+          usesA.lastUse->getBlock()->findAncestorOpInBlock(*usesB.firstUse);
+      Operation *ancOpA =
+          usesB.firstUse->getBlock()->findAncestorOpInBlock(*usesA.lastUse);
+      if (ancOpB == usesA.lastUse || ancOpA == usesB.firstUse)
         return false;
     } else
       return false;
     return true;
-  }
-
-  /// Check if otherLastUse is used before the first operation of PostDominator
-  /// of value v and other.
-  bool isUsedBeforePostDom(Value v, Value other, Operation *otherLastUse) {
-    Block *postDom = findCommonDominator(v, ValueSetT{other}, postDominators);
-    return isUsedBefore(otherLastUse, &postDom->front());
   }
 
   /// Check if the given operation is used after the introduction of one of the
@@ -642,21 +643,44 @@ private:
   }
 
   /// Updates the first Operation from the two given ones.
-  template <typename DominatorFunc>
-  void updateFirstOp(Operation *&op, Operation *user, DominatorFunc domFunc) {
+  void updateFirstOp(Value value, Operation *&op, Operation *user) {
     if (!op || isUsedBefore(user, op))
       op = user;
     else if (!isUsedBefore(op, user) && !isUsedBefore(user, op))
-      op = domFunc();
+      op = findOpInDominator(dominators, value, op, user);
   }
 
   /// Updates the last Operation from the two given ones.
-  template <typename DominatorFunc>
-  void updateLastOp(Operation *&op, Operation *user, DominatorFunc domFunc) {
+  void updateLastOp(Value value, Operation *&op, Operation *user) {
+    // As we are updating the last OP here we have to erase value from this set
+    // as the new lastOP might not be inside a nested region anymore.
+    lastUseInsideNestedRegion.erase(value);
     if (!op || isUsedBefore(op, user))
       op = user;
     else if (!isUsedBefore(op, user) && !isUsedBefore(user, op))
-      op = domFunc();
+      op = findOpInDominator(postDominators, value, op, user);
+  }
+
+  /// Given two OPs, this finds the correct OP to use as the next first or last
+  /// use (depending on postDom) of the value belonging to op.
+  template <template <bool> class DominanceInfoT, bool IsPostDom>
+  Operation *findOpInDominator(const DominanceInfoT<IsPostDom> &dominance,
+                               Value value, Operation *op, Operation *user) {
+    Block *dominator =
+        dominance.findNearestCommonDominator(op->getBlock(), user->getBlock());
+    // If no ancestorOp exists in the dominator we know that the two OPs are in
+    // neighboring branches and we thus return the respective dominator
+    // operation. Otherwise we know that the two OPs are in neighboring regions
+    // and thus need to  return the ancestorOp.
+    Operation *ancestorOp = dominator->findAncestorOpInBlock(*op);
+    if (!ancestorOp)
+      return IsPostDom ? &dominator->front() : &dominator->back();
+    // If we are searching for a last op we have to remember that the actual
+    // last use of value was inside a nested region and we chose its ancestor op
+    // as the new last use.
+    if (IsPostDom)
+      lastUseInsideNestedRegion.insert(value);
+    return ancestorOp;
   }
 
   /// Returns true if op is used before other.
@@ -668,9 +692,24 @@ private:
     if (opBlock == otherBlock)
       return op->isBeforeInBlock(other);
 
-    // Check if op is used in a dominator of other.
-    if (dominators.dominates(opBlock, otherBlock))
-      return true;
+    // Check if op is used in a dominator of other. If other is inside a nested
+    // region we need to find its ancestor Op and check if it is after op.
+    if (dominators.dominates(opBlock, otherBlock)) {
+      Operation *ancestor = opBlock->findAncestorOpInBlock(*other);
+      return !ancestor || op->isBeforeInBlock(ancestor);
+    }
+
+    // Should one of the OPs (or both) be inside a nested region we need to
+    // bring the respective blocks to the top level. If we pass by the common
+    // dominator in both cases we can use the two ancestor OPs in this dominator
+    // to determine which OP comes first.
+    Block *commonDom =
+        dominators.findNearestCommonDominator(opBlock, otherBlock);
+    if (findBlocksOnCommonLevel(op, other, opBlock, otherBlock, commonDom)) {
+      Operation *opAncestor = commonDom->findAncestorOpInBlock(*op);
+      Operation *otherAncestor = commonDom->findAncestorOpInBlock(*other);
+      return opAncestor->isBeforeInBlock(otherAncestor);
+    }
 
     // Recursive call to find if the otherBlock is a successor of opBlock. The
     // common postdominator is used as a termination condition.
@@ -678,6 +717,37 @@ private:
         postDominators.findNearestCommonDominator(opBlock, otherBlock);
     SmallPtrSet<Block *, 6> visited;
     return isSuccessor(opBlock, otherBlock, postDom, visited);
+  }
+
+  /// Set block to the block of the parent op one level. Returns true if the
+  /// dominator block was passed by.
+  bool findBlocksOnCommonLevel(Operation *op, Operation *otherOp, Block *&block,
+                               Block *&otherBlock, Block *commonDom) {
+
+    DenseMap<Operation *, Block *> visitedOps;
+    bool domFound = false;
+    // Climb the parentOps until no parentOp exists and update block to the
+    // block below the parentOp of op. Insert each pair of visted parentOp and
+    // block in the map.
+    while (op) {
+      block = op->getBlock();
+      op = op->getParentOp();
+      domFound |= block == commonDom;
+      visitedOps.insert(std::pair<Operation *, Block *>(op, block));
+    }
+    // Climb the parentOps until no parentOp exists and update otherBlock to the
+    // block below the parentOp of otherOp. If the parentOp was already visted,
+    // set block to the corresponding block of that op.
+    while (otherOp) {
+      otherBlock = otherOp->getBlock();
+      otherOp = otherOp->getParentOp();
+      domFound |= block == commonDom;
+      if (visitedOps.count(otherOp)) {
+        block = visitedOps[otherOp];
+        return domFound;
+      }
+    }
+    return domFound;
   }
 
   /// Recursive function that returns true if the target Block is reachable from
@@ -755,6 +825,10 @@ private:
 
   /// Maps a value to the set of values that it replaces.
   llvm::MapVector<Value, DenseSet<Value>> actualReuseMap;
+
+  /// A set of all values which lastUse is an unreal use spawning a nested
+  /// region.
+  llvm::DenseSet<Value> lastUseInsideNestedRegion;
 };
 
 //===----------------------------------------------------------------------===//
