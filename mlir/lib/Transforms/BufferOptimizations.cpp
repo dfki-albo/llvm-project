@@ -101,11 +101,6 @@ static bool isRealUse(Value value, Operation *op) {
                       [&](Value operand) { return operand == value; });
 }
 
-/// Checks if the types of the given values are compatible for a replacement.
-static bool checkTypeCompatibility(Value a, Value b) {
-  return a.getType() == b.getType();
-}
-
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -380,6 +375,9 @@ public:
 
       // Iterate over the aliasSet and compute the use range.
       for (Value aliasValue : aliasSet) {
+        if (aliasValue != allocValue && !aliasOfMap.count(aliasValue))
+          aliasOfMap.insert(std::pair<Value, Value>(aliasValue, allocValue));
+
         // Check if the allocValue/alias is already processed or has no users.
         if (useRangeMap.count(aliasValue) || aliasValue.use_empty())
           continue;
@@ -425,7 +423,7 @@ public:
         // Do not compare an item to itself and make sure that the value of item
         // B is not a BlockArgument. BlockArguments cannot be reused. Also
         // perform a type check.
-        if (useRangeItemA == useRangeItemB || itemB.isa<BlockArgument>() ||
+        if (useRangeItemA == useRangeItemB || aliasOfMap.count(itemB) ||
             !checkTypeCompatibility(itemA, itemB))
           continue;
 
@@ -557,7 +555,8 @@ public:
              potReuseValue != potReuses->end();) {
           FirstAndLastUse potReuseUses = useRangeMap[*potReuseValue];
 
-          if (transitiveInterference(*potReuseValue, potReuses) ||
+          if (replacedSet.contains(*potReuseValue) ||
+              transitiveInterference(*potReuseValue, potReuses) ||
               !isReusePossible(item, *potReuseValue, uses, potReuseUses))
             potReuses->erase(potReuseValue);
           else
@@ -571,8 +570,8 @@ public:
     // that value.
     for (auto &reuse : actualReuseMap) {
       for (Value reuseValue : reuse.second) {
-        reuseValue.getDefiningOp()->erase();
         reuseValue.replaceAllUsesWith(reuse.first);
+        reuseValue.getDefiningOp()->erase();
       }
     }
   }
@@ -697,8 +696,56 @@ private:
     return false;
   }
 
+  /// Checks if the types of the given values are compatible for a replacement.
+  bool checkTypeCompatibility(Value a, Value b) {
+    auto shapedA = a.getType().cast<ShapedType>();
+    auto shapedB = b.getType().cast<ShapedType>();
+
+    // If both types are shaped we can check for equality.
+    if (shapedA.hasStaticShape() && shapedB.hasStaticShape())
+      return a.getType() == b.getType();
+    // If only one of the types is shaped we cannot detect compatibility since
+    // we do not know how the allocation operation behaves on its operands.
+    if (shapedA.hasStaticShape() != shapedB.hasStaticShape())
+      return false;
+
+    // We need the actual alloc operation of both types. For aliases we need to
+    // check for the defining OP of the alias' origin.
+    Operation *defOpA = getAliasDefiningOp(a);
+    Operation *defOpB = getAliasDefiningOp(b);
+
+    assert(defOpA && "Defining OP must not be null.");
+    assert(defOpB && "Defining OP must not be null.");
+
+    // If the alloc method or the number of operands is not the same the types
+    // cannot be compatible.
+    if (defOpA->getName() != defOpB->getName() ||
+        defOpA->getNumOperands() != defOpB->getNumOperands())
+      return false;
+
+    // If all operands are equal the types are compatible.
+    for (auto const &pair :
+         llvm::zip(defOpA->getOperands(), defOpB->getOperands())) {
+      if (std::get<0>(pair) != std::get<1>(pair))
+        return false;
+    }
+    return true;
+  }
+
+  // Returns the defining operation of the value. If the value is an alias then
+  // return the defining operation of its origin.
+  Operation *getAliasDefiningOp(Value value) {
+    auto iter = aliasOfMap.find(value);
+    return iter != aliasOfMap.end() ? iter->second.getDefiningOp()
+                                    : value.getDefiningOp();
+  }
+
   /// Cache the alias lists for all values to avoid the recomputation.
   BufferAliasAnalysis::ValueMapT aliasCache;
+
+  /// Maps an alias to its origin. This is used to compute the defining OP of an
+  /// alias.
+  llvm::DenseMap<Value, Value> aliasOfMap;
 
   /// The current dominance info.
   DominanceInfo dominators;
