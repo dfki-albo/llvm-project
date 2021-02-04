@@ -36,8 +36,8 @@ func @condBranchWithAlias(%arg0: i1, %arg1: memref<2xf32>, %arg2: memref<2xf32>)
 // CHECK-NEXT: br ^[[BB3]](%[[ALLOC0]]{{.*}}
 //      CHECK: ^[[BB3]](%[[BLOCKARG0:.*]]: {{.*}}):
 // CHECK-NEXT: test.copy(%[[BLOCKARG0]], %[[ARG2]])
-// CHECK-NEXT: test.copy(%[[BLOCKARG0]], %[[ARG2]])
-// CHECK-NEXT: test.copy(%[[BLOCKARG0]], %[[ARG2]])
+// CHECK-NEXT: test.copy(%[[ALLOC0]], %[[ARG2]])
+// CHECK-NEXT: test.copy(%[[ALLOC0]], %[[ARG2]])
 // CHECK-NEXT: return
 
 // -----
@@ -138,57 +138,7 @@ func @aliasReuse(%arg0: memref<2xf32>) {
 // CHECK-NEXT: br ^[[BB1:.*]](%[[ALLOC0]]{{.*}}
 //      CHECK: ^[[BB1]](%[[BLOCKARG0:.*]]: {{.*}}):
 // CHECK-NEXT: test.buffer_based in(%[[ARG0]]{{.*}}out(%[[BLOCKARG0]]
-// CHECK-NEXT: test.buffer_based in(%[[ARG0]]{{.*}}out(%[[BLOCKARG0]]
-// CHECK-NEXT: return
-
-// -----
-
-// Expected behavior: %0 should replace %1. We don't have a clear last use of %0
-// here so we use the first OP of the common post dominator as its ``last use''.
-// However, this should not prevent the replacement of any buffers after said
-// post dominator block.
-// CHECK-LABEL: func @unrealUseInPostDom
-func @unrealUseInPostDom(%arg0: i1, %arg1: memref<2xf32>, %arg2: memref<2xf32>)
-{
-  %0 = alloc() : memref<2xf32>
-  %1 = alloc() : memref<2xf32>
-  cond_br %arg0, ^bb1, ^bb2
-^bb1:
-  test.buffer_based in(%0: memref<2xf32>) out(%arg1: memref<2xf32>)
-  br ^bb3
-^bb2:
-  test.buffer_based in(%arg1: memref<2xf32>) out(%0: memref<2xf32>)
-  br ^bb3
-^bb3:
-  cond_br %arg0, ^bb4, ^bb5
-^bb4:
-  test.copy(%1, %arg2) : (memref<2xf32>, memref<2xf32>)
-  br ^bb6
-^bb5:
-  test.copy(%1, %arg2) : (memref<2xf32>, memref<2xf32>)
-  br ^bb6
-^bb6:
-  return
-}
-
-// CHECK-SAME: %[[ARG0:.*]]: {{.*}}, %[[ARG1:.*]]: {{.*}}, %[[ARG2:.*]]: {{.*}}
-// CHECK-NEXT: %[[ALLOC0:.*]] = alloc()
-// CHECK-NEXT: cond_br %[[ARG0]], ^[[BB1:.*]], ^[[BB2:.*]]
-//      CHECK: ^[[BB1]]:
-// CHECK-NEXT: test.buffer_based in(%[[ALLOC0]]{{.*}}out(%[[ARG1]]
-// CHECK-NEXT: br ^[[BB3:.*]]
-//      CHECK: ^[[BB2]]:
-// CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
-// CHECK-NEXT: br ^[[BB3]]
-//      CHECK: ^[[BB3]]:
-// CHECK-NEXT: cond_br %[[ARG0]], ^[[BB4:.*]], ^[[BB5:.*]]
-//      CHECK: ^[[BB4]]:
-// CHECK-NEXT: test.copy(%[[ALLOC0]], %[[ARG2]])
-// CHECK-NEXT: br ^[[BB6:.*]]
-//      CHECK: ^[[BB5]]:
-// CHECK-NEXT: test.copy(%[[ALLOC0]], %[[ARG2]])
-// CHECK-NEXT: br ^[[BB6]]
-// CHECK-NEXT: ^[[BB6]]:
+// CHECK-NEXT: test.buffer_based in(%[[ARG0]]{{.*}}out(%[[ALLOC0]]
 // CHECK-NEXT: return
 
 // -----
@@ -210,10 +160,7 @@ func @sameOperation() {
 
 // -----
 
-// Expected behavior: %0 replaces %1. Due to the order of the alloc operations
-// and the first uses %1 will be the first buffer in the potential replacement
-// list of %0. After it is replaced the last use of %0 will be first OP of bb3
-// (the post dominator of %0 and %1). %2 thus can't be replaced anymore.
+// Expected behavior: %0 replaces both %1 and %2.
 // CHECK-LABEL: func @branchReuse
 func @branchReuse(%arg0: i1, %arg1: memref<2xf32>) {
   %0 = alloc() : memref<2xf32>
@@ -233,11 +180,10 @@ func @branchReuse(%arg0: i1, %arg1: memref<2xf32>) {
 
 // CHECK-SAME: %[[ARG0:.*]]: {{.*}}, %[[ARG1:.*]]: {{.*}}
 // CHECK-NEXT: %[[ALLOC0:.*]] = alloc()
-// CHECK-NEXT: %[[ALLOC1:.*]] = alloc()
 // CHECK-NEXT: cond_br %[[ARG0]], ^[[BB1:.*]], ^[[BB2:.*]]
 //      CHECK: ^[[BB1]]:
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC0]]{{.*}}out(%[[ARG1]]
-// CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC1]]
+// CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
 // CHECK-NEXT: br ^[[BB3:.*]]
 //      CHECK: ^[[BB2]]:
 // CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
@@ -297,28 +243,28 @@ func @complexTypeMatching(%arg0: i1, %arg1: index, %arg2: index, %arg3 : index) 
 // CHECK-SAME: %[[ARG3:.*]]: {{.*}}
 // CHECK-NEXT: %[[ALLOC0:.*]] = alloc()
 // CHECK-NEXT: %[[ALLOC1:.*]] = alloc(%[[ARG1]])
-// CHECK-NEXT: %[[ALLOC2:.*]] = alloc(%[[ARG1]], %[[ARG2]])
-// CHECK-NEXT: %[[ALLOC3:.*]] = alloc(%[[ARG1]], %[[ARG3]])
-// CHECK-NEXT: %[[ALLOC4:.*]] = alloc(%[[ARG2]])
+// CHECK-NEXT: %[[ALLOC2:.*]] = alloc(%[[ARG2]])
+// CHECK-NEXT: %[[ALLOC3:.*]] = alloc(%[[ARG1]], %[[ARG2]])
+// CHECK-NEXT: %[[ALLOC4:.*]] = alloc(%[[ARG1]], %[[ARG3]])
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC0]]{{.*}}out(%[[ALLOC0]]
 // CHECK-NEXT: cond_br %[[ARG0]], ^[[BB1:.*]], ^[[BB4:.*]]
 //      CHECK: ^[[BB1]]:
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC1]]{{.*}}out(%[[ALLOC1]]
 // CHECK-NEXT: cond_br %[[ARG0]], ^[[BB2:.*]], ^[[BB3:.*]]
 //      CHECK: ^[[BB2]]:
-// CHECK-NEXT: test.buffer_based in(%[[ALLOC2]]{{.*}}out(%[[ALLOC2]]
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC3]]{{.*}}out(%[[ALLOC3]]
+// CHECK-NEXT: test.buffer_based in(%[[ALLOC4]]{{.*}}out(%[[ALLOC4]]
 //      CHECK: ^[[BB3]]:
-// CHECK-NEXT: test.buffer_based in(%[[ALLOC4]]{{.*}}out(%[[ALLOC4]]
+// CHECK-NEXT: test.buffer_based in(%[[ALLOC2]]{{.*}}out(%[[ALLOC2]]
 //      CHECK: ^[[BB4]]:
-// CHECK-NEXT: test.buffer_based in(%[[ALLOC4]]{{.*}}out(%[[ALLOC4]]
+// CHECK-NEXT: test.buffer_based in(%[[ALLOC2]]{{.*}}out(%[[ALLOC2]]
 // CHECK-NEXT: return
 
 // -----
 
 // Expected behavior: In this case %2 can replace %0 and %0 can replace %1.
-// However, %2 can't replace %1. Due to the ordering the only valid replacement
-// is %0 replaces %2.
+// However, %2 can't replace %1. Due to the ordering of the allocs the only
+// valid replacement is %0 replaces %2.
 // CHECK-LABEL: func @nonTransitive
 func @nonTransitive(%arg0: i1, %arg1: memref<2xf32>) {
   %0 = alloc() : memref<2xf32>
@@ -455,15 +401,14 @@ func @nestedRegionControlFlow(%arg0 : index, %arg1 : index) -> memref<2xf32> {
 }
 
 //      CHECK: %[[ALLOC1:.*]] = alloc()
-// CHECK-NEXT: %[[ALLOC2:.*]] = alloc()
+// CHECK-NEXT: %[[ALLOC2:.*]] = scf.if
 // CHECK-NEXT: %[[ALLOC3:.*]] = scf.if
-// CHECK-NEXT: %[[ALLOC4:.*]] = scf.if
 //      CHECK: scf.yield %[[ALLOC1]]
-//      CHECK: scf.yield %[[ALLOC2]]
-//      CHECK: scf.yield %[[ALLOC4]]
+//      CHECK: scf.yield %[[ALLOC1]]
+//      CHECK: scf.yield %[[ALLOC3]]
 //      CHECK: test.buffer_based in(%[[ALLOC1]]{{.*}}out(%[[ALLOC1]]
-// CHECK-NEXT: scf.yield %[[ALLOC2]]
-//      CHECK: return %[[ALLOC3]]
+// CHECK-NEXT: scf.yield %[[ALLOC1]]
+//      CHECK: return %[[ALLOC2]]
 
 // -----
 
@@ -503,8 +448,8 @@ func @nestedRegionControlFlowNoReuse(%arg0 : index,
 
 // Expected behavior: A control flow inside a nested region. %1 should replace
 // %2.
-// CHECK-LABEL: func @ControlFlowInsideNestedRegion
-func @ControlFlowInsideNestedRegion(%arg0 : i1) {
+// CHECK-LABEL: func @controlFlowInsideNestedRegion
+func @controlFlowInsideNestedRegion(%arg0 : i1) {
   %0 = alloc() : memref<2xf32>
   test.region_buffer_based in(%0: memref<2xf32>) out(%0: memref<2xf32>) {
   ^bb0(%gen1_arg0: f32, %gen1_arg1: f32):
@@ -540,8 +485,8 @@ func @ControlFlowInsideNestedRegion(%arg0 : i1) {
 
 // Expected behavior: A control flow inside a nested region with no possilbe
 // reuse.
-// CHECK-LABEL: func @ControlFlowInsideNestedRegion
-func @ControlFlowInsideNestedRegionNoReuse(%arg0 : i1) {
+// CHECK-LABEL: func @controlFlowInsideNestedRegion
+func @controlFlowInsideNestedRegionNoReuse(%arg0 : i1) {
   %0 = alloc() : memref<2xf32>
   test.region_buffer_based in(%0: memref<2xf32>) out(%0: memref<2xf32>) {
   ^bb0(%gen1_arg0: f32, %gen1_arg1: f32):
@@ -575,3 +520,131 @@ func @ControlFlowInsideNestedRegionNoReuse(%arg0 : i1) {
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC1]]{{.*}}out(%[[ALLOC1]]
 // CHECK-NEXT: test.buffer_based in(%[[ALLOC2]]{{.*}}out(%[[ALLOC0]]
 //      CHECK: return
+
+// -----
+
+// Expected behavior: No reuse is possible here as both buffers are used inside
+//                    a loop and thus interfere.
+// CHECK-LABEL: func @noReuseInNestedRegionLoop
+func @noReuseInNestedRegionLoop(
+  %arg0: memref<2xf32>,
+  %lb: index,
+  %ub: index,
+  %step: index,
+  %buf: memref<2xf32>) -> memref<2xf32> {
+  %0 = alloc() : memref<2xf32>
+  %1 = alloc() : memref<2xf32>
+  %2 = scf.for %i = %lb to %ub step %step
+    iter_args(%iterBuf = %buf) -> memref<2xf32> {
+    %3 = cmpi "eq", %lb, %ub : index
+    %4 = scf.if %3 -> (memref<2xf32>) {
+      scf.yield %arg0 : memref<2xf32>
+    } else {
+      test.buffer_based in(%arg0: memref<2xf32>) out(%arg0: memref<2xf32>)
+      test.buffer_based in(%0: memref<2xf32>) out(%0: memref<2xf32>)
+      scf.yield %arg0 : memref<2xf32>
+    }
+    test.buffer_based in(%arg0: memref<2xf32>) out(%1: memref<2xf32>)
+    scf.yield %arg0 : memref<2xf32>
+  }
+  return %2 : memref<2xf32>
+}
+
+//      CHECK: %[[ALLOC0:.*]] = alloc()
+// CHECK-NEXT: %[[ALLOC1:.*]] = alloc()
+
+// -----
+
+// Expected behavior: %0 and %1 cannot replace each other as they are used
+// inside a loop. However, %0 can replace %2 as it is only used after the loop.
+// CHECK-LABEL: func @replaceAfterLoop
+func @replaceAfterLoop(%arg0: i1, %arg1: memref<2xf32>, %arg2: memref<2xf32>)
+{
+  %0 = alloc() : memref<2xf32>
+  %1 = alloc() : memref<2xf32>
+  %2 = alloc() : memref<2xf32>
+  br ^bb1
+^bb1:
+  cond_br %arg0, ^bb2, ^bb3
+^bb2:
+  test.buffer_based in(%arg1: memref<2xf32>) out(%0: memref<2xf32>)
+  test.buffer_based in(%arg1: memref<2xf32>) out(%1: memref<2xf32>)
+  br ^bb4
+^bb3:
+  test.buffer_based in(%arg2: memref<2xf32>) out(%0: memref<2xf32>)
+  test.buffer_based in(%arg2: memref<2xf32>) out(%1: memref<2xf32>)
+  br ^bb4
+^bb4:
+  cond_br %arg0, ^bb1, ^bb5
+^bb5:
+  test.buffer_based in(%arg1: memref<2xf32>) out(%2: memref<2xf32>)
+  return
+}
+
+// CHECK-SAME: %[[ARG0:.*]]: {{.*}}, %[[ARG1:.*]]: {{.*}}, %[[ARG2:.*]]: {{.*}}
+//      CHECK: %[[ALLOC0:.*]] = alloc()
+//      CHECK: %[[ALLOC1:.*]] = alloc()
+//      CHECK: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
+// CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC1]]
+//      CHECK: test.buffer_based in(%[[ARG2]]{{.*}}out(%[[ALLOC0]]
+// CHECK-NEXT: test.buffer_based in(%[[ARG2]]{{.*}}out(%[[ALLOC1]]
+//      CHECK: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
+
+// -----
+
+// Expected behavior: Due to the gap in the userange %0 can replace %1.
+// CHECK-LABEL: func @useRangeGap
+func @useRangeGap(%arg0: i1, %arg1: memref<2xf32>, %arg2: memref<2xf32>)
+{
+  %0 = alloc() : memref<2xf32>
+  %1 = alloc() : memref<2xf32>
+  cond_br %arg0, ^bb1, ^bb2
+^bb1:
+  test.buffer_based in(%arg1: memref<2xf32>) out(%0: memref<2xf32>)
+  test.buffer_based in(%arg1: memref<2xf32>) out(%1: memref<2xf32>)
+  br ^bb3
+^bb2:
+  test.buffer_based in(%arg2: memref<2xf32>) out(%0: memref<2xf32>)
+  test.buffer_based in(%arg2: memref<2xf32>) out(%1: memref<2xf32>)
+  br ^bb3
+^bb3:
+  return
+}
+
+// CHECK-SAME: %[[ARG0:.*]]: {{.*}}, %[[ARG1:.*]]: {{.*}}, %[[ARG2:.*]]: {{.*}}
+//      CHECK: %[[ALLOC0:.*]] = alloc()
+//      CHECK: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
+// CHECK-NEXT: test.buffer_based in(%[[ARG1]]{{.*}}out(%[[ALLOC0]]
+//      CHECK: test.buffer_based in(%[[ARG2]]{{.*}}out(%[[ALLOC0]]
+// CHECK-NEXT: test.buffer_based in(%[[ARG2]]{{.*}}out(%[[ALLOC0]]
+
+// -----
+
+// Expected behavior: Due to the loop from block ^bb2 to ^bb1 it is not possible
+// to replace anything inside the nested region. In addion %2 cannot be replaced
+// outside the loop, because of the interference inside the loop. %3 can be
+// replaced by %0.
+// CHECK-LABEL: func @loopWithNestedRegion
+func @loopWithNestedRegion(%arg0: i1, %arg1: memref<2xf32>, %arg2: memref<2xf32>)
+{
+  %0 = alloc() : memref<2xf32>
+  %1 = alloc() : memref<2xf32>
+  %2 = alloc() : memref<2xf32>
+  %3 = alloc() : memref<2xf32>
+  br ^bb1
+^bb1:
+  %4 = scf.if %arg0 -> (memref<2xf32>) {
+    test.buffer_based in(%arg1: memref<2xf32>) out(%0: memref<2xf32>)
+    scf.yield %2 : memref<2xf32>
+  } else {
+    test.buffer_based in(%arg1: memref<2xf32>) out(%1: memref<2xf32>)
+    scf.yield %2 : memref<2xf32>
+  }
+  br ^bb2
+^bb2:
+  cond_br %arg0, ^bb1, ^bb3
+^bb3:
+  test.buffer_based in(%arg1: memref<2xf32>) out(%2: memref<2xf32>)
+  test.buffer_based in(%arg1: memref<2xf32>) out(%3: memref<2xf32>)
+  return
+}
