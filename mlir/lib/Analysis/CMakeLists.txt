@@ -10,6 +10,7 @@ set(LLVM_OPTIONAL_SOURCES
   NumberOfExecutions.cpp
   PresburgerSet.cpp
   SliceAnalysis.cpp
+  UserangeAnalysis.cpp
   Utils.cpp
   )
 
@@ -19,6 +20,7 @@ add_mlir_library(MLIRAnalysis
   Liveness.cpp
   NumberOfExecutions.cpp
   SliceAnalysis.cpp
+  UserangeAnalysis.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Analysis
