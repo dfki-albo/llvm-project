@@ -360,7 +360,7 @@ public:
           continue;
 
         // Check if itemA can replace itemB.
-        if (!userange.rangeInterference(itemA, itemB))
+        if (!userange.rangesInterfere(itemA, itemB))
           continue;
 
         // Get the defining operation of itemA.
@@ -440,7 +440,7 @@ public:
           }
 
           // Merge the userange of v into the userange of item.
-          userange.rangeUnion(item, v);
+          userange.unionRanges(item, v);
 
           currentReuserSet.insert(item);
           replacedSet.insert(v);
@@ -477,7 +477,7 @@ public:
           if (replacedSet.contains(*potReuseValue) ||
               transitiveInterference(*potReuseValue, potReuses,
                                      actualReuseMap) ||
-              !userange.rangeInterference(item, *potReuseValue))
+              !userange.rangesInterfere(item, *potReuseValue))
             potReuses->erase(potReuseValue);
           else
             ++potReuseValue;
