@@ -77,7 +77,7 @@ private:
   ///       of a.
   void intervalSubtract(IntervalVector &a, const IntervalVector &b) const;
 
-  /// Maps each Operation to an ID.
+  /// Maps each Operation to a unique ID according to the program squence.
   DenseMap<Operation *, size_t> operationIds;
 
   /// Maps a value to its use range interval.
