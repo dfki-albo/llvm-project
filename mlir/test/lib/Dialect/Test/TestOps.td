@@ -1826,15 +1826,14 @@ class BufferBasedOpBase<string mnemonic, list<OpTrait> traits>
   let arguments = (ins AnyMemRef:$input, AnyMemRef:$output);
 }
 
-def BufferBasedOp : BufferBasedOpBase<"buffer_based", []>{
+def BufferBasedOp : BufferBasedOpBase<"buffer_based", []> {
   let assemblyFormat = [{
     `in` `(` $input`:` type($input) `)` `out` `(` $output`:` type($output) `)`
     attr-dict
   }];
 }
 
-def RegionBufferBasedOp : BufferBasedOpBase<"region_buffer_based",
-      [SingleBlockImplicitTerminator<"RegionYieldOp">]> {
+def RegionBufferBasedOp : BufferBasedOpBase<"region_buffer_based", []> {
   let regions = (region AnyRegion:$region);
   let assemblyFormat = [{
     `in` `(` $input`:` type($input) `)` `out` `(` $output`:` type($output) `)`
